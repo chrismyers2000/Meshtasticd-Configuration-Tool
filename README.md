@@ -344,5 +344,5 @@ sudo apt install pipx && pipx install "meshtastic[cli]" && pipx ensurepath
 ```
 
 
-
+```
 
