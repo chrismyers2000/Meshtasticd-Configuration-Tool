@@ -170,10 +170,10 @@ class MeshAdvApp(ctk.CTk):
         for label, key, cmd in action_buttons:
             btn_row = self._add_button_row(actions_frame, btn_row, label, key, cmd)
 
-        # --- Web Server ---
+        # --- Extras ---
         ctk.CTkLabel(
             left,
-            text="Web Server",
+            text="Extras",
             font=ctk.CTkFont(size=13, weight="bold"),
         ).grid(row=row, column=0, sticky="w", padx=4, pady=(14, 4))
         row += 1

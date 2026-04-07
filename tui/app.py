@@ -350,9 +350,8 @@ class MeshAdvTUI(App):
                 yield StatusRow("Set Region",        "region")
                 yield StatusRow("Send Test Message", "send_msg")
 
-                yield Label("Web Server", classes="section-title")
-                yield StatusRow("Enable Web Server",    "web_enable")
-                yield StatusRow("Launch Web Interface", "web_launch")
+                yield Label("Extras", classes="section-title")
+                yield StatusRow("Enable Web Server", "web_enable")
 
             with Container(id="right-panel"):
                 yield Label("Output", classes="section-title")
@@ -407,7 +406,6 @@ class MeshAdvTUI(App):
             "btn-region":       self.action_set_region,
             "btn-send_msg":     self.action_send_message,
             "btn-web_enable":   self.action_enable_webserver,
-            "btn-web_launch":   self.action_launch_web_interface,
         }
         handler = dispatch.get(btn_id)
         if handler:
@@ -512,13 +510,6 @@ class MeshAdvTUI(App):
         self.query_one("#config-bar", Static).add_class("visible")
         self._run_worker(config_editor.enable_webserver, log=self.log_output)
 
-    def action_launch_web_interface(self) -> None:
-        import webbrowser
-        from core.utils import get_local_ip
-        ip = get_local_ip()
-        self.log_output(f"Opening https://{ip}:9443 in browser...")
-        webbrowser.open(f"https://{ip}:9443")
-
     def action_refresh(self) -> None:
         self.log_output("Refreshing status...")
         self._load_hardware()
@@ -599,7 +590,6 @@ class MeshAdvTUI(App):
         self.call_from_thread(self._set_status, "web_enable",
                               "Enabled" if web else "Disabled",
                               "ok" if web else "warn")
-        self.call_from_thread(self._set_status, "web_launch", "https://<ip>:9443", "amber")
 
     def _set_status(self, key: str, text: str, state: str) -> None:
         try:

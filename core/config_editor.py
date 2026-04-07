@@ -167,8 +167,8 @@ def enable_webserver(log: Optional[Callable[[str], None]] = None) -> bool:
             if stripped and not stripped.startswith(" ") and not stripped.startswith("#"):
                 in_webserver_block = False
             else:
-                # Strip leading "#  " comment marker from the four sub-keys
-                uncommented = re.sub(r"^(\s*)#  ", r"\1", line)
+                # Replace leading "#  " with "  " to preserve YAML indentation
+                uncommented = re.sub(r"^#  ", "  ", line)
                 new_lines.append(uncommented)
                 continue
 
