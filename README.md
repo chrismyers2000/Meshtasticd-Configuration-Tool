@@ -33,20 +33,6 @@ Run the following command on your Raspberry Pi to download and install the tool:
 curl -fsSL https://raw.githubusercontent.com/chrismyers2000/Meshtasticd-Configuration-Tool/refs/heads/main/install.sh | bash
 ```
 
-The installer will:
-1. Verify Python 3 is installed (installs it if missing)
-2. Verify pip3 is installed (installs it if missing)
-3. Install the required Python packages: `customtkinter` and `textual`
-4. Download all application files to `~/meshadv-config/`
-5. Create a desktop shortcut (if a desktop environment is detected) Not Working
-
-### Manual dependency install
-
-If you prefer to install dependencies yourself:
-
-```bash
-pip3 install customtkinter textual
-```
 
 ---
 
