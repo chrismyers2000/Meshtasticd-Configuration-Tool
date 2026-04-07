@@ -543,8 +543,9 @@ class MeshAdvApp(ctk.CTk):
         import webbrowser
         from core.utils import get_local_ip
         ip = get_local_ip()
-        webbrowser.open(f"https://{ip}:9443")
-        self.log(f"Opening https://{ip}:9443 in browser...")
+        port = config_editor.get_webserver_port()
+        webbrowser.open(f"https://{ip}:{port}")
+        self.log(f"Opening https://{ip}:{port} in browser...")
 
     # ------------------------------------------------------------------
     # Dialogs

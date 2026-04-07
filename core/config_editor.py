@@ -138,6 +138,23 @@ def is_webserver_enabled() -> bool:
     return False
 
 
+def get_webserver_port() -> int:
+    """Read the Webserver Port from config.yaml. Returns 9443 if not found or unreadable."""
+    content = read_file(CONFIG_YAML) or ""
+    in_webserver_block = False
+    for line in content.splitlines():
+        if re.match(r"^\s*Webserver\s*:", line):
+            in_webserver_block = True
+            continue
+        if in_webserver_block:
+            if line and not line.startswith(" ") and not line.startswith("#"):
+                break
+            m = re.match(r"^\s+Port\s*:\s*(\d+)", line)
+            if m:
+                return int(m.group(1))
+    return 9443
+
+
 def enable_webserver(log: Optional[Callable[[str], None]] = None) -> bool:
     """Uncomment the Webserver block (Port, RootPath, SSLKey, SSLCert) in config.yaml."""
     content = read_file(CONFIG_YAML)

@@ -351,7 +351,8 @@ class MeshAdvTUI(App):
                 yield StatusRow("Send Test Message", "send_msg")
 
                 yield Label("Extras", classes="section-title")
-                yield StatusRow("Enable Web Server", "web_enable")
+                yield StatusRow("Enable Web Server",    "web_enable")
+                yield StatusRow("Launch Web Interface", "web_launch")
 
             with Container(id="right-panel"):
                 yield Label("Output", classes="section-title")
@@ -406,6 +407,7 @@ class MeshAdvTUI(App):
             "btn-region":       self.action_set_region,
             "btn-send_msg":     self.action_send_message,
             "btn-web_enable":   self.action_enable_webserver,
+            "btn-web_launch":   self.action_launch_web_interface,
         }
         handler = dispatch.get(btn_id)
         if handler:
@@ -510,6 +512,20 @@ class MeshAdvTUI(App):
         self.query_one("#config-bar", Static).add_class("visible")
         self._run_worker(config_editor.enable_webserver, log=self.log_output)
 
+    def action_launch_web_interface(self) -> None:
+        from core.utils import get_local_ip
+        from rich.text import Text
+        ip = get_local_ip()
+        port = config_editor.get_webserver_port()
+        url = f"https://{ip}:{port}"
+        self.log_output(f"Web interface URL: {url}")
+        try:
+            log = self.query_one("#output-log", RichLog)
+            note = Text("  (you may need to hold Ctrl while clicking)", style="dim")
+            log.write(note)
+        except Exception:
+            pass
+
     def action_refresh(self) -> None:
         self.log_output("Refreshing status...")
         self._load_hardware()
@@ -590,6 +606,7 @@ class MeshAdvTUI(App):
         self.call_from_thread(self._set_status, "web_enable",
                               "Enabled" if web else "Disabled",
                               "ok" if web else "warn")
+        self.call_from_thread(self._set_status, "web_launch", "Prints URL", "amber")
 
     def _set_status(self, key: str, text: str, state: str) -> None:
         try:
