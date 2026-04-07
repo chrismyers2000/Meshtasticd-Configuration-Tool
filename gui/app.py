@@ -170,6 +170,27 @@ class MeshAdvApp(ctk.CTk):
         for label, key, cmd in action_buttons:
             btn_row = self._add_button_row(actions_frame, btn_row, label, key, cmd)
 
+        # --- Web Server ---
+        ctk.CTkLabel(
+            left,
+            text="Web Server",
+            font=ctk.CTkFont(size=13, weight="bold"),
+        ).grid(row=row, column=0, sticky="w", padx=4, pady=(14, 4))
+        row += 1
+
+        web_buttons = [
+            ("Enable Web Server",    "web_enable", self.on_enable_webserver),
+            ("Launch Web Interface", "web_launch", self.on_launch_web_interface),
+        ]
+        web_frame = ctk.CTkFrame(left, corner_radius=8)
+        web_frame.grid(row=row, column=0, sticky="ew", padx=0, pady=0)
+        web_frame.grid_columnconfigure(1, weight=1)
+        row += 1
+
+        btn_row = 0
+        for label, key, cmd in web_buttons:
+            btn_row = self._add_button_row(web_frame, btn_row, label, key, cmd)
+
     def _build_hardware_panel(self, parent, start_row: int) -> int:
         """Build stacked hardware info rows. Returns the next available row index."""
         frame = ctk.CTkFrame(parent, corner_radius=8)
@@ -359,6 +380,11 @@ class MeshAdvApp(ctk.CTk):
                    "Ready" if cli else "CLI not installed",
                    COLOR_OK if cli else COLOR_UNKNOWN)
 
+        web = config_editor.is_webserver_enabled()
+        self.after(0, self._set_status, "web_enable",
+                   "Enabled" if web else "Disabled",
+                   COLOR_OK if web else COLOR_WARN)
+
     def _set_status(self, key: str, text: str, color: str) -> None:
         lbl = self._status_labels.get(key)
         if lbl:
@@ -505,6 +531,20 @@ class MeshAdvApp(ctk.CTk):
             lambda: actions.send_test_message(log=self.log),
             done_callback=self.refresh_all_status,
         )
+
+    def on_enable_webserver(self) -> None:
+        self._show_service_warning()
+        self._run_in_thread(
+            lambda: config_editor.enable_webserver(log=self.log),
+            done_callback=self.refresh_all_status,
+        )
+
+    def on_launch_web_interface(self) -> None:
+        import webbrowser
+        from core.utils import get_local_ip
+        ip = get_local_ip()
+        webbrowser.open(f"https://{ip}:9443")
+        self.log(f"Opening https://{ip}:9443 in browser...")
 
     # ------------------------------------------------------------------
     # Dialogs

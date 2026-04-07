@@ -17,6 +17,7 @@ from core.utils import (
     backup_file,
     download_file,
     file_exists,
+    get_local_ip,
     read_file,
     run_command,
     run_sudo,
@@ -118,6 +119,71 @@ def is_gps_configured_in_yaml(pi: PiModel) -> bool:
         re.MULTILINE,
     )
     return bool(pattern.search(content))
+
+
+def is_webserver_enabled() -> bool:
+    """Return True if the Webserver Port line is uncommented in config.yaml."""
+    content = read_file(CONFIG_YAML) or ""
+    in_webserver_block = False
+    for line in content.splitlines():
+        if re.match(r"^\s*Webserver\s*:", line):
+            in_webserver_block = True
+            continue
+        if in_webserver_block:
+            # An uncommented top-level key ends the block
+            if line and not line.startswith(" ") and not line.startswith("#"):
+                break
+            if re.match(r"^\s+Port\s*:", line) and not line.strip().startswith("#"):
+                return True
+    return False
+
+
+def enable_webserver(log: Optional[Callable[[str], None]] = None) -> bool:
+    """Uncomment the Webserver block (Port, RootPath, SSLKey, SSLCert) in config.yaml."""
+    content = read_file(CONFIG_YAML)
+    if content is None:
+        _log(log, f"config.yaml not found at {CONFIG_YAML}")
+        return False
+
+    if is_webserver_enabled():
+        _log(log, "Web server is already enabled in config.yaml.")
+        return True
+
+    backup_file(CONFIG_YAML)
+    new_lines = []
+    in_webserver_block = False
+    found_block = False
+
+    for line in content.splitlines(keepends=True):
+        stripped = line.rstrip("\n\r")
+        if re.match(r"^\s*Webserver\s*:", stripped):
+            in_webserver_block = True
+            found_block = True
+            new_lines.append(line)
+            continue
+
+        if in_webserver_block:
+            # End of block: non-indented, non-comment, non-empty line
+            if stripped and not stripped.startswith(" ") and not stripped.startswith("#"):
+                in_webserver_block = False
+            else:
+                # Strip leading "#  " comment marker from the four sub-keys
+                uncommented = re.sub(r"^(\s*)#  ", r"\1", line)
+                new_lines.append(uncommented)
+                continue
+
+        new_lines.append(line)
+
+    if not found_block:
+        _log(log, "Webserver block not found in config.yaml.")
+        return False
+
+    ok = write_file_sudo(CONFIG_YAML, "".join(new_lines))
+    if ok:
+        _log(log, "Web server enabled in config.yaml. Restart meshtasticd to apply.")
+    else:
+        _log(log, "ERROR: Failed to write config.yaml.")
+    return ok
 
 
 def get_hat_config_in_use() -> Optional[str]:

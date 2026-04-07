@@ -107,6 +107,18 @@ Screen {
     display: block;
 }
 
+#config-bar {
+    background: #e67e22;
+    color: white;
+    height: 1;
+    padding: 0 2;
+    display: none;
+}
+
+#config-bar.visible {
+    display: block;
+}
+
 ModalScreen {
     background: #000000 60%;
     align: center middle;
@@ -338,11 +350,16 @@ class MeshAdvTUI(App):
                 yield StatusRow("Set Region",        "region")
                 yield StatusRow("Send Test Message", "send_msg")
 
+                yield Label("Web Server", classes="section-title")
+                yield StatusRow("Enable Web Server",    "web_enable")
+                yield StatusRow("Launch Web Interface", "web_launch")
+
             with Container(id="right-panel"):
                 yield Label("Output", classes="section-title")
                 yield RichLog(highlight=False, markup=False, id="output-log")
 
         yield Static("  Reboot required for changes to take effect.", id="reboot-bar")
+        yield Static("  A service restart is required after making changes to config.yaml.", id="config-bar")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -389,6 +406,8 @@ class MeshAdvTUI(App):
             "btn-python_cli":   self.action_install_cli,
             "btn-region":       self.action_set_region,
             "btn-send_msg":     self.action_send_message,
+            "btn-web_enable":   self.action_enable_webserver,
+            "btn-web_launch":   self.action_launch_web_interface,
         }
         handler = dispatch.get(btn_id)
         if handler:
@@ -489,6 +508,17 @@ class MeshAdvTUI(App):
     def action_send_message(self) -> None:
         self._run_worker(actions.send_test_message, log=self.log_output)
 
+    def action_enable_webserver(self) -> None:
+        self.query_one("#config-bar", Static).add_class("visible")
+        self._run_worker(config_editor.enable_webserver, log=self.log_output)
+
+    def action_launch_web_interface(self) -> None:
+        import webbrowser
+        from core.utils import get_local_ip
+        ip = get_local_ip()
+        self.log_output(f"Opening https://{ip}:9443 in browser...")
+        webbrowser.open(f"https://{ip}:9443")
+
     def action_refresh(self) -> None:
         self.log_output("Refreshing status...")
         self._load_hardware()
@@ -564,6 +594,12 @@ class MeshAdvTUI(App):
         self.call_from_thread(self._set_status, "send_msg",
                               "Ready" if cli else "CLI not installed",
                               "ok" if cli else "amber")
+
+        web = config_editor.is_webserver_enabled()
+        self.call_from_thread(self._set_status, "web_enable",
+                              "Enabled" if web else "Disabled",
+                              "ok" if web else "warn")
+        self.call_from_thread(self._set_status, "web_launch", "https://<ip>:9443", "amber")
 
     def _set_status(self, key: str, text: str, state: str) -> None:
         try:

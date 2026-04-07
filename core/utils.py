@@ -198,3 +198,16 @@ def get_logger() -> logging.Logger:
     if _logger is None:
         _logger = setup_logging()
     return _logger
+
+
+def get_local_ip() -> str:
+    """Return the device's primary local IP address, or 127.0.0.1 on failure."""
+    import socket
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "127.0.0.1"
