@@ -807,7 +807,7 @@ class ServicesDialog(ctk.CTkToplevel):
             text, color = "Running  |  Boot: " + ("Enabled" if enabled else "Disabled"), COLOR_OK
         else:
             text, color = "Stopped  |  Boot: " + ("Enabled" if enabled else "Disabled"), COLOR_WARN
-        self.after(0, self._status_lbl.configure, {"text": text, "text_color": color})
+        self.after(0, lambda: self._status_lbl.configure(text=text, text_color=color))
 
     def _run(self, func: Callable) -> None:
         def _worker():
@@ -826,7 +826,15 @@ class ServicesDialog(ctk.CTkToplevel):
 
     def _start(self) -> None:
         self._log("Starting meshtasticd...")
-        self._run(lambda: actions.service_start())
+        def _do_start():
+            ok, out = actions.service_start()
+            if not ok:
+                self._log("Start failed — running reset-failed and retrying...")
+                actions.service_reset_failed()
+                ok2, out2 = actions.service_start()
+                if not ok2:
+                    self._log("Retry also failed.")
+        self._run(_do_start)
 
     def _stop(self) -> None:
         self._log("Stopping meshtasticd...")

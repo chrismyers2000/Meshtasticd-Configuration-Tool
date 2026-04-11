@@ -41,6 +41,11 @@ def service_stop() -> tuple[bool, str]:
     return result.success, result.output
 
 
+def service_reset_failed() -> tuple[bool, str]:
+    result = run_sudo(["systemctl", "reset-failed", SERVICE + ".service"])
+    return result.success, result.output
+
+
 def service_status() -> tuple[bool, str]:
     result = run_sudo(["systemctl", "status", SERVICE, "--no-pager", "-l"])
     return result.success, result.output
