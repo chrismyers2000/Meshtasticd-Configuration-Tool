@@ -482,7 +482,16 @@ class MeshAdvTUI(App):
         self._run_worker(actions.service_enable)
 
     def action_service_start(self) -> None:
-        self._run_worker(actions.service_start)
+        def _do_start():
+            ok, out = actions.service_start()
+            if not ok:
+                self.call_from_thread(self.log_output, "Start failed — running reset-failed and retrying...")
+                actions.service_reset_failed()
+                ok2, out2 = actions.service_start()
+                if not ok2:
+                    self.call_from_thread(self.log_output, "Retry also failed.")
+            self.call_from_thread(self._refresh_status)
+        threading.Thread(target=_do_start, daemon=True).start()
 
     def action_service_stop(self) -> None:
         self._run_worker(actions.service_stop)
