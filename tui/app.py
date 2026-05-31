@@ -28,7 +28,7 @@ from textual.widgets import (
 from textual.reactive import reactive
 from textual import work
 
-from core import actions, config_editor, installer
+from core import actions, config_editor, hardware, installer
 from core.actions import REGIONS
 from core.hardware import SystemInfo, get_system_info
 
@@ -47,13 +47,7 @@ Screen {
     background: #16213e;
     padding: 0 2;
     color: #00d4ff;
-}
-
-#hat-note {
-    height: 1;
-    background: #16213e;
-    padding: 0 2;
-    color: #666688;
+    content-align: left middle;
 }
 
 #main-area {
@@ -203,6 +197,29 @@ class RemoveScreen(ModalScreen):
         self.dismiss(event.button.id == "btn-confirm")
 
 
+class DownloadYamlScreen(ModalScreen):
+    """Choose which HAT YAML to download: Mini or Pro."""
+
+    def compose(self) -> ComposeResult:
+        with Container(id="modal-box"):
+            yield Label("Download YAML:", classes="section-title")
+            with RadioSet(id="yaml-set"):
+                yield RadioButton("MeshAdv Mini  (lora-MeshAdv-Mini-900M22S.yaml)", value=True)
+                yield RadioButton("MeshAdv Pro   (lora-MeshAdv-Pro-915M30S.yaml)")
+            with Horizontal():
+                yield Button("Download", variant="primary", id="btn-confirm")
+                yield Button("Cancel", variant="default", id="btn-cancel")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "btn-cancel":
+            self.dismiss(None)
+        elif event.button.id == "btn-confirm":
+            radio_set = self.query_one("#yaml-set", RadioSet)
+            selected = radio_set.pressed_button
+            label = selected.label.plain if selected else ""
+            self.dismiss("pro" if "Pro" in label else "mini")
+
+
 class HatConfigScreen(ModalScreen):
     """File browser for available.d configs."""
 
@@ -216,7 +233,7 @@ class HatConfigScreen(ModalScreen):
             yield Label("Select Hat Config:", classes="section-title")
             yield ListView(*self._build_items(self._configs), id="config-list")
             with Horizontal():
-                yield Button("Download Mini YAML", variant="warning", id="btn-download")
+                yield Button("Download YAML", variant="warning", id="btn-download")
                 yield Button("Cancel", variant="default", id="btn-cancel")
 
     def _build_items(self, configs: list) -> list:
@@ -237,11 +254,16 @@ class HatConfigScreen(ModalScreen):
         if event.button.id == "btn-cancel":
             self.dismiss(None)
         elif event.button.id == "btn-download":
-            self._do_download()
+            self.app.push_screen(DownloadYamlScreen(), self._handle_download_choice)
 
-    def _do_download(self) -> None:
+    def _handle_download_choice(self, choice: str | None) -> None:
+        if choice is None:
+            return
         def _work():
-            config_editor.download_mini_yaml()
+            if choice == "pro":
+                config_editor.download_pro_yaml()
+            else:
+                config_editor.download_mini_yaml()
             new_configs = config_editor.list_available_configs(self._hat)
             self.call_from_thread(self._refresh_list, new_configs)
 
@@ -252,6 +274,7 @@ class HatConfigScreen(ModalScreen):
         list_view.clear()
         for item in self._build_items(configs):
             list_view.append(item)
+
 
 
 class RegionScreen(ModalScreen):
@@ -326,10 +349,6 @@ class MeshAdvTUI(App):
     def compose(self) -> ComposeResult:
         yield Header()
         yield Static("Detecting hardware...", id="hardware-panel")
-        yield Static(
-            "  Note: Hat needs to be installed at time of boot for detection",
-            id="hat-note",
-        )
 
         with Horizontal(id="main-area"):
             with ScrollableContainer(id="left-panel"):
@@ -457,6 +476,10 @@ class MeshAdvTUI(App):
     def action_set_hat_config(self) -> None:
         if self.sysinfo is None:
             return
+        if self.sysinfo.hat.name.startswith("MeshAdv Pro"):
+            if config_editor._find_in_available_d(config_editor.PRO_YAML_FILENAME) is None:
+                self.log_output("MeshAdv Pro detected — downloading Pro config YAML...")
+                config_editor.ensure_pro_yaml_available(log=self.log_output)
         configs = config_editor.list_available_configs(self.sysinfo.hat)
         if not configs:
             self.log_output(f"No config files found in {config_editor.AVAILABLE_D}.")
@@ -468,7 +491,13 @@ class MeshAdvTUI(App):
             return
         action, filename = result
         if action == "select" and filename:
-            self._run_worker(config_editor.set_hat_config, filename, log=self.log_output)
+            def _do():
+                ok, reboot_needed = config_editor.set_hat_config(filename, log=self.log_output)
+                if reboot_needed:
+                    self.call_from_thread(self.log_output, "GPIO change applied — reboot required.")
+                    self.call_from_thread(setattr, self, "reboot_required", True)
+                self.call_from_thread(self._refresh_status)
+            threading.Thread(target=_do, daemon=True).start()
 
     def action_edit_config(self) -> None:
         import os

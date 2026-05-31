@@ -10,7 +10,7 @@ from typing import Callable, Optional
 
 import customtkinter as ctk
 
-from core import actions, config_editor, installer
+from core import actions, config_editor, hardware, installer
 from core.actions import REGIONS
 from core.hardware import SystemInfo, get_system_info
 
@@ -196,6 +196,7 @@ class MeshAdvApp(ctk.CTk):
         frame = ctk.CTkFrame(parent, corner_radius=8)
         frame.grid(row=start_row, column=0, sticky="ew", padx=0, pady=0)
         frame.grid_columnconfigure(1, weight=1)
+        frame.grid_columnconfigure(2, weight=0)
 
         info_items = [
             ("Pi Model:",    "hw_pi_model"),
@@ -212,8 +213,14 @@ class MeshAdvApp(ctk.CTk):
             ).grid(row=i, column=0, padx=(12, 6), pady=5, sticky="w")
 
             val_label = ctk.CTkLabel(frame, text="Detecting...", anchor="w")
-            val_label.grid(row=i, column=1, padx=(0, 12), pady=5, sticky="w")
+            val_label.grid(row=i, column=1, padx=(0, 4), pady=5, sticky="w")
             self._status_labels[key] = val_label
+
+            if key == "hw_hat":
+                ctk.CTkButton(
+                    frame, text="Detect HAT", width=100,
+                    command=self.on_detect_hat_manual,
+                ).grid(row=i, column=2, padx=(0, 12), pady=5, sticky="w")
 
         # Grey note below the Hat row
         ctk.CTkLabel(
@@ -222,7 +229,7 @@ class MeshAdvApp(ctk.CTk):
             text_color="gray60",
             font=ctk.CTkFont(size=11),
             anchor="w",
-        ).grid(row=3, column=0, columnspan=2, padx=(16, 12), pady=(0, 6), sticky="w")
+        ).grid(row=3, column=0, columnspan=3, padx=(16, 12), pady=(0, 6), sticky="w")
 
         return start_row + 1
 
@@ -471,7 +478,29 @@ class MeshAdvApp(ctk.CTk):
             done_callback=lambda: (self.refresh_all_status(), self._show_reboot_warning()),
         )
 
+    def on_detect_hat_manual(self) -> None:
+        HatDetectDialog(self, self._on_hat_detect_result, log_callback=self.log)
+
+    def _on_hat_detect_result(self, hat_info) -> None:
+        if hat_info is not None and self.sysinfo is not None:
+            self.sysinfo.hat = hat_info
+            self._set_label("hw_hat", str(hat_info))
+            self.refresh_all_status()
+
     def on_set_hat_config(self) -> None:
+        if self.sysinfo is None:
+            return
+        if self.sysinfo.hat.name.startswith("MeshAdv Pro"):
+            if config_editor._find_in_available_d(config_editor.PRO_YAML_FILENAME) is None:
+                self.log("MeshAdv Pro detected — downloading Pro config YAML...")
+                def _download_then_open():
+                    config_editor.ensure_pro_yaml_available(log=self.log)
+                    self.after(0, self._open_hat_config_dialog)
+                threading.Thread(target=_download_then_open, daemon=True).start()
+                return
+        self._open_hat_config_dialog()
+
+    def _open_hat_config_dialog(self) -> None:
         if self.sysinfo is None:
             return
         configs = config_editor.list_available_configs(self.sysinfo.hat)
@@ -484,10 +513,13 @@ class MeshAdvApp(ctk.CTk):
         HatConfigDialog(self, configs, self._on_hat_config_selected, hat=self.sysinfo.hat, log_callback=self.log)
 
     def _on_hat_config_selected(self, filename: str) -> None:
-        self._run_in_thread(
-            lambda: config_editor.set_hat_config(filename, log=self.log),
-            done_callback=self.refresh_all_status,
-        )
+        def _do():
+            ok, reboot_needed = config_editor.set_hat_config(filename, log=self.log)
+            self.after(0, self.refresh_all_status)
+            if reboot_needed:
+                self.after(0, self.log, "GPIO change applied — reboot required.")
+                self.after(0, self._show_reboot_warning)
+        threading.Thread(target=_do, daemon=True).start()
 
     def on_edit_config(self) -> None:
         import os
@@ -671,8 +703,8 @@ class HatConfigDialog(ctk.CTkToplevel):
         btn_frame = ctk.CTkFrame(self, fg_color="transparent")
         btn_frame.pack(pady=10, fill="x", padx=16)
         ctk.CTkButton(
-            btn_frame, text="Download Mini YAML", fg_color="#8e44ad",
-            command=self._download_mini,
+            btn_frame, text="Download YAML", fg_color="#8e44ad",
+            command=self._on_download,
         ).pack(side="left", padx=4)
         ctk.CTkButton(
             btn_frame, text="Cancel", fg_color="gray40", command=self.destroy
@@ -701,18 +733,146 @@ class HatConfigDialog(ctk.CTkToplevel):
         self._callback(cfg.name)
         self.destroy()
 
-    def _download_mini(self) -> None:
-        log = self._log
-        if log:
-            log("Downloading lora-MeshAdv-Mini-900M22S-downloaded.yaml from GitHub...")
+    def _on_download(self) -> None:
+        DownloadYamlDialog(self, self._do_download)
 
-        def _do():
-            config_editor.download_mini_yaml(log=log)
-            # Refresh the list after download
+    def _do_download(self, choice: str) -> None:
+        log = self._log
+
+        def _work():
+            if choice == "pro":
+                config_editor.download_pro_yaml(log=log)
+            else:
+                config_editor.download_mini_yaml(log=log)
             new_configs = config_editor.list_available_configs(self._hat)
             self.after(0, self._populate_list, new_configs)
 
-        threading.Thread(target=_do, daemon=True).start()
+        threading.Thread(target=_work, daemon=True).start()
+
+
+_HAT_DETECT_WARNING = (
+    "WARNING: This process will temporarily create an I2C bus on GPIO 0 and GPIO 1.\n\n"
+    "Ensure nothing is connected to or using these pins before proceeding.\n\n"
+    "The I2C bus will be removed automatically when detection is complete."
+)
+
+
+class HatDetectDialog(ctk.CTkToplevel):
+    """Two-phase dialog: warning → live detection log."""
+
+    def __init__(
+        self,
+        parent,
+        callback: Callable,
+        log_callback: Optional[Callable[[str], None]] = None,
+    ) -> None:
+        super().__init__(parent)
+        self.transient(parent)
+        self.title("Manual HAT Detection")
+        self.geometry("520x300")
+        self._callback = callback
+        self._log_cb = log_callback
+        self._result = None
+        self.after(50, lambda: _safe_grab(self))
+
+        ctk.CTkLabel(
+            self, text="Manual HAT Detection",
+            font=ctk.CTkFont(size=14, weight="bold"),
+        ).pack(padx=16, pady=(14, 6))
+
+        self._warn_label = ctk.CTkLabel(
+            self, text=_HAT_DETECT_WARNING,
+            wraplength=460, justify="left",
+            text_color="orange",
+        )
+        self._warn_label.pack(padx=16, pady=(0, 12))
+
+        self._log_box = ctk.CTkTextbox(self, wrap="word", state="disabled", height=160)
+
+        self._btn_frame = ctk.CTkFrame(self, fg_color="transparent")
+        self._btn_frame.pack(pady=10, fill="x", padx=16)
+        ctk.CTkButton(
+            self._btn_frame, text="Proceed", fg_color="#e67e22",
+            command=self._on_proceed,
+        ).pack(side="left", expand=True, padx=4)
+        ctk.CTkButton(
+            self._btn_frame, text="Cancel", fg_color="gray40",
+            command=self.destroy,
+        ).pack(side="left", expand=True, padx=4)
+
+        self._close_btn = ctk.CTkButton(self, text="Close", command=self._on_close)
+
+    def _on_proceed(self) -> None:
+        self._warn_label.pack_forget()
+        self._btn_frame.pack_forget()
+        self.geometry("520x400")
+        self._log_box.pack(padx=12, pady=(0, 8), fill="both", expand=True)
+        self._close_btn.configure(state="disabled")
+        self._close_btn.pack(pady=(0, 12))
+        threading.Thread(target=self._run_detection, daemon=True).start()
+
+    def _run_detection(self) -> None:
+        result = hardware.read_hat_eeprom_manual(log=self._log_to_box)
+        if result.success:
+            self._result = hardware._match_hat_from_strings(
+                result.vendor, result.product, result.raw_output
+            )
+            self._log_to_box(f"\nDetected: {self._result.name}")
+        else:
+            self._result = None
+            self._log_to_box(f"\nERROR: {result.error}")
+        self.after(0, lambda: self._close_btn.configure(state="normal"))
+
+    def _log_to_box(self, msg: str) -> None:
+        def _append():
+            self._log_box.configure(state="normal")
+            self._log_box.insert("end", msg.rstrip() + "\n")
+            self._log_box.see("end")
+            self._log_box.configure(state="disabled")
+        self.after(0, _append)
+
+    def _on_close(self) -> None:
+        self._callback(self._result)
+        self.destroy()
+
+
+class DownloadYamlDialog(ctk.CTkToplevel):
+    """Ask which HAT YAML to download: Mini or Pro."""
+
+    def __init__(self, parent, callback: Callable[[str], None]) -> None:
+        super().__init__(parent)
+        self.transient(parent)
+        self.title("Download YAML")
+        self.geometry("360x220")
+        self._callback = callback
+        self.after(50, lambda: _safe_grab(self))
+
+        ctk.CTkLabel(self, text="Select YAML to download:", font=ctk.CTkFont(size=13)).pack(
+            padx=16, pady=(16, 8)
+        )
+
+        self._var = ctk.StringVar(value="mini")
+        ctk.CTkRadioButton(
+            self, text="MeshAdv Mini  (lora-MeshAdv-Mini-900M22S.yaml)",
+            variable=self._var, value="mini",
+        ).pack(anchor="w", padx=36, pady=4)
+        ctk.CTkRadioButton(
+            self, text="MeshAdv Pro   (lora-MeshAdv-Pro-915M30S.yaml)",
+            variable=self._var, value="pro",
+        ).pack(anchor="w", padx=36, pady=4)
+
+        btn_frame = ctk.CTkFrame(self, fg_color="transparent")
+        btn_frame.pack(pady=16, fill="x", padx=16)
+        ctk.CTkButton(btn_frame, text="Download", command=self._confirm).pack(
+            side="left", expand=True, padx=4
+        )
+        ctk.CTkButton(btn_frame, text="Cancel", fg_color="gray40", command=self.destroy).pack(
+            side="left", expand=True, padx=4
+        )
+
+    def _confirm(self) -> None:
+        self._callback(self._var.get())
+        self.destroy()
 
 
 class RegionDialog(ctk.CTkToplevel):

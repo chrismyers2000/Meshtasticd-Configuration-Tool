@@ -4,11 +4,13 @@ core/hardware.py — Detect Raspberry Pi model, MeshAdv HAT, OS info, and meshta
 
 from __future__ import annotations
 
+import os
 import re
+import struct
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Callable, Optional
 
-from core.utils import read_file, run_command, file_exists
+from core.utils import read_file, run_command, run_sudo, file_exists
 
 
 # ---------------------------------------------------------------------------
@@ -59,6 +61,15 @@ class SystemInfo:
     meshtasticd_version: str    # "Not installed" or version string like "2.3.14.abcd1234"
 
 
+@dataclass
+class EepromReadResult:
+    success: bool
+    vendor: str       # empty string on failure
+    product: str      # empty string on failure
+    raw_output: str   # full eepdump text for display
+    error: str        # description on failure, empty on success
+
+
 # ---------------------------------------------------------------------------
 # HAT definitions
 # ---------------------------------------------------------------------------
@@ -73,10 +84,10 @@ HAT_DEFINITIONS = {
     ),
     "MeshAdv Pro": HatInfo(
         detected=True,
-        name="MeshAdv Pro (Coming Soon)",
+        name="MeshAdv Pro",
         has_eeprom=True,
         has_gps=True,
-        config_yaml_name="lora-MeshAdv-Mini-900M22S.yaml",  # Uses Mini config until Pro config is available
+        config_yaml_name="lora-MeshAdv-Pro-915M30S.yaml",
     ),
     "MeshAdv Pi Hat v1.1": HatInfo(
         detected=False,
@@ -249,3 +260,147 @@ def get_system_info() -> SystemInfo:
     os_info = detect_os_info()
     version = detect_meshtasticd_version()
     return SystemInfo(pi=pi, hat=hat, os=os_info, meshtasticd_version=version)
+
+
+def _match_hat_from_strings(vendor: str, product: str, raw_output: str = "") -> HatInfo:
+    """
+    Map raw vendor/product strings (from EEPROM) to a known HatInfo.
+    Falls back to scanning the full eepdump output if targeted field extraction
+    yielded empty strings (handles variation in eepdump output formats).
+    """
+    # Use the full raw output as a fallback search surface if fields are empty
+    search_text = f"{vendor} {product} {raw_output}".lower()
+
+    is_meshadv = "meshadv" in search_text or "frequency labs" in search_text
+
+    if is_meshadv and re.search(r'\bpro\b', search_text):
+        return HAT_DEFINITIONS["MeshAdv Pro"]
+    if is_meshadv and re.search(r'\bmini\b', search_text):
+        return HAT_DEFINITIONS["MeshAdv Mini"]
+    if is_meshadv:
+        return HAT_DEFINITIONS["MeshAdv Pi Hat v1.1"]
+
+    # Unknown model — use the actual product string from the EEPROM as the name
+    display_name = product.strip() or vendor.strip() or "Unknown HAT"
+    return HatInfo(
+        detected=True,
+        name=display_name,
+        has_eeprom=True,
+        has_gps=False,
+        config_yaml_name="lora-MeshAdv-900M30S.yaml",
+    )
+
+
+def read_hat_eeprom_manual(
+    log: Optional[Callable[[str], None]] = None,
+) -> EepromReadResult:
+    """
+    Manually read the HAT EEPROM by creating a temporary I2C bus on GPIO 0/1.
+    Steps: load dtoverlay → read EEPROM with eepflash.sh → parse with eepdump → cleanup.
+    """
+    def _log(msg: str) -> None:
+        if log:
+            log(msg)
+
+    tmp_path = f"/tmp/hat_detect_{os.getpid()}.eep"
+
+    # Step 1: load I2C overlay
+    _log("Loading i2c-gpio overlay on GPIO 0/1 (bus 9)...")
+    result = run_sudo(
+        ["dtoverlay", "i2c-gpio", "i2c_gpio_sda=0", "i2c_gpio_scl=1", "bus=9"],
+        timeout=15,
+    )
+    if not result.success:
+        return EepromReadResult(
+            success=False, vendor="", product="", raw_output="",
+            error=f"dtoverlay failed: {result.output}",
+        )
+    _log("  I2C bus 9 created.")
+
+    # Step 2: read EEPROM
+    _log("Reading EEPROM via eepflash.sh (this may take a moment)...")
+    result = run_sudo(
+        ["eepflash.sh", "-r", "-t=24c64", "-d=9", f"-f={tmp_path}"],
+        input_text="yes\n",
+        timeout=30,
+    )
+    if not result.success:
+        _cleanup(tmp_path, _log)
+        no_eeprom = (
+            "no such file or directory" in result.output.lower()
+            or "error doing i/o operation" in result.output.lower()
+        )
+        if no_eeprom:
+            return EepromReadResult(
+                success=False, vendor="", product="", raw_output="",
+                error="Hat not detected, this is normal for the MeshAdv Pi Hat v1.1",
+            )
+        return EepromReadResult(
+            success=False, vendor="", product="", raw_output=result.output,
+            error=f"eepflash.sh failed: {result.output}",
+        )
+    _log("  EEPROM read complete.")
+
+    # Step 3: parse vendor/product by running the parser as root (avoids
+    # permission issues — eepflash.sh writes the file owned by root)
+    _log("Parsing EEPROM data...")
+    vendor, product, parse_error = _read_eep_strings_sudo(tmp_path)
+    if not vendor and not product:
+        _cleanup(tmp_path, _log)
+        return EepromReadResult(
+            success=False, vendor="", product="", raw_output="",
+            error=f"Could not parse vendor info: {parse_error}",
+        )
+    raw_output = f"vendor: {vendor}\nproduct: {product}"
+
+    _cleanup(tmp_path, _log)
+
+    return EepromReadResult(
+        success=True,
+        vendor=vendor,
+        product=product,
+        raw_output=raw_output,
+        error="",
+    )
+
+
+def _read_eep_strings_sudo(path: str) -> tuple[str, str, str]:
+    """
+    Parse a HAT EEPROM .eep binary file as root and return (vendor, product, error).
+    Runs via sudo python3 to avoid file-permission issues with root-owned .eep files.
+    """
+    script = (
+        "import struct,sys\n"
+        "data=open(" + repr(path) + ",'rb').read()\n"
+        "sig=struct.unpack_from('>I',data,0)[0]\n"
+        "assert sig==0x522d5069,'bad_sig:0x%08x'%sig\n"
+        "_v,_r,n,_l=struct.unpack_from('<BBHI',data,4)\n"
+        "o=12\n"
+        "for _ in range(n):\n"
+        " t,_c,d=struct.unpack_from('<HHI',data,o)\n"
+        " s=o+8\n"
+        " if t==1:\n"
+        "  vl,pl=struct.unpack_from('BB',data,s+20)\n"
+        "  p=s+22\n"
+        "  print(data[p:p+vl].decode('utf-8',errors='replace').rstrip('\\x00').strip())\n"
+        "  print(data[p+vl:p+vl+pl].decode('utf-8',errors='replace').rstrip('\\x00').strip())\n"
+        "  sys.exit(0)\n"
+        " o=s+d\n"
+        "print('no vendor atom found',file=sys.stderr)\n"
+        "sys.exit(1)\n"
+    )
+    result = run_sudo(["python3"], input_text=script, timeout=10)
+    if result.success:
+        lines = result.stdout.strip().splitlines()
+        vendor  = lines[0] if len(lines) > 0 else ""
+        product = lines[1] if len(lines) > 1 else ""
+        return vendor, product, ""
+    error = (result.stderr.strip() or result.stdout.strip() or "unknown error")
+    return "", "", error
+
+
+def _cleanup(tmp_path: str, log: Callable[[str], None]) -> None:
+    """Remove temp .eep file and unload the i2c-gpio overlay."""
+    run_sudo(["rm", "-f", tmp_path])
+    log("Removing i2c-gpio overlay...")
+    run_sudo(["dtoverlay", "-r", "i2c-gpio"], timeout=15)

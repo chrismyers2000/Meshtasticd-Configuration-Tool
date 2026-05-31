@@ -39,11 +39,19 @@ MINI_YAML_URL = (
     "/main/Data/lora-MeshAdv-Mini-900M22S.yaml"
 )
 
+PRO_YAML_FILENAME = "lora-MeshAdv-Pro-915M30S.yaml"
+PRO_YAML_DOWNLOADED_FILENAME = "lora-MeshAdv-Pro-915M30S-downloaded.yaml"
+PRO_YAML_URL = (
+    "https://raw.githubusercontent.com/chrismyers2000/MeshAdv-Pro"
+    "/main/Data/Misc/lora-MeshAdv-Pro-915M30S.yaml"
+)
+PRO_GPIO_LINE = "gpio=12=op,dh"
+
 # Default config filenames per HAT
 HAT_DEFAULT_CONFIGS = {
     "MeshAdv Pi Hat v1.1": "lora-MeshAdv-900M30S.yaml",
     "MeshAdv Mini": "lora-MeshAdv-Mini-900M22S.yaml",
-    "MeshAdv Pro": "lora-MeshAdv-Mini-900M22S.yaml",  # Pro uses Mini config for now
+    "MeshAdv Pro": "lora-MeshAdv-Pro-915M30S.yaml",
 }
 
 
@@ -417,23 +425,25 @@ def _update_yaml_serial_path(serial_path: str, log: Optional[Callable[[str], Non
 def set_hat_config(
     yaml_filename: str,
     log: Optional[Callable[[str], None]] = None,
-) -> bool:
+) -> tuple[bool, bool]:
     """
     Copy the selected yaml file from available.d to config.d.
     Clears any existing .yaml files in config.d first.
+    Manages gpio=12=op,dh in config.txt: adds it for Pro configs, removes it for all others.
+    Returns (success, reboot_needed).
     """
     # Find source file
     source_path = _find_in_available_d(yaml_filename)
     if source_path is None:
         _log(log, f"ERROR: {yaml_filename} not found in {AVAILABLE_D}")
-        return False
+        return False, False
 
     # Ensure config.d exists
     if not os.path.isdir(CONFIG_D):
         result = run_sudo(["mkdir", "-p", CONFIG_D])
         if not result.success:
             _log(log, f"ERROR: Could not create {CONFIG_D}")
-            return False
+            return False, False
 
     # Remove any existing yaml files in config.d
     try:
@@ -451,12 +461,30 @@ def set_hat_config(
     dest_path = os.path.join(CONFIG_D, yaml_filename)
     _log(log, f"  Copying {yaml_filename} to {CONFIG_D}")
     result = run_sudo(["cp", source_path, dest_path])
-    if result.success:
-        _log(log, f"Hat config set to: {yaml_filename}")
-        return True
-    else:
+    if not result.success:
         _log(log, f"ERROR: Failed to copy config file.\n{result.stderr}")
-        return False
+        return False, False
+
+    _log(log, f"Hat config set to: {yaml_filename}")
+
+    # Manage GPIO 12 pin for MeshAdv Pro
+    reboot_needed = False
+    if yaml_filename.startswith("lora-MeshAdv-Pro"):
+        if not _config_txt_has_active_line(PRO_GPIO_LINE):
+            backup_file(CONFIG_TXT)
+            _log(log, f"  Adding {PRO_GPIO_LINE} to {CONFIG_TXT} (required for MeshAdv Pro)")
+            append_line_sudo(CONFIG_TXT, f"{PRO_GPIO_LINE} # MeshAdv Pro power enable")
+            reboot_needed = True
+        else:
+            _log(log, f"  {PRO_GPIO_LINE} already present in {CONFIG_TXT}")
+    else:
+        if _config_txt_has_active_line(PRO_GPIO_LINE):
+            backup_file(CONFIG_TXT)
+            _log(log, f"  Removing {PRO_GPIO_LINE} from {CONFIG_TXT} (not needed for {yaml_filename})")
+            _remove_line_from_config_txt(PRO_GPIO_LINE)
+            reboot_needed = True
+
+    return True, reboot_needed
 
 
 def _find_in_available_d(filename: str) -> Optional[str]:
@@ -467,6 +495,39 @@ def _find_in_available_d(filename: str) -> Optional[str]:
         if filename in files:
             return os.path.join(root, filename)
     return None
+
+
+def _remove_line_from_config_txt(line: str) -> bool:
+    """
+    Remove all active (uncommented) occurrences of `line` from config.txt.
+    Returns True if at least one line was removed, False if nothing changed.
+    """
+    content = read_file(CONFIG_TXT)
+    if content is None:
+        return False
+    pattern = re.compile(
+        r"^\s*" + re.escape(line.strip()) + r"(\s*(#.*)?)?\s*$",
+        re.MULTILINE,
+    )
+    new_content, count = pattern.subn("", content)
+    if count == 0:
+        return False
+    # Clean up blank lines left behind (collapse multiple blank lines to one)
+    new_content = re.sub(r"\n{3,}", "\n\n", new_content)
+    write_file_sudo(CONFIG_TXT, new_content)
+    return True
+
+
+def ensure_pro_yaml_available(log: Optional[Callable[[str], None]] = None) -> bool:
+    """
+    Ensure a Pro YAML config is present in available.d (canonical or downloaded form).
+    Downloads from GitHub if neither is found. Returns True if available, False on failure.
+    """
+    if (_find_in_available_d(PRO_YAML_FILENAME) is not None
+            or _find_in_available_d(PRO_YAML_DOWNLOADED_FILENAME) is not None):
+        _log(log, f"Pro YAML already present in {AVAILABLE_D}")
+        return True
+    return download_pro_yaml(log)
 
 
 def download_mini_yaml(log: Optional[Callable[[str], None]] = None) -> bool:
@@ -480,6 +541,23 @@ def download_mini_yaml(log: Optional[Callable[[str], None]] = None) -> bool:
 
     _log(log, f"Downloading {filename} from GitHub...")
     if download_file(MINI_YAML_URL, dest):
+        _log(log, f"Download complete: {dest}")
+        return True
+    else:
+        _log(log, "ERROR: Download failed. Check your internet connection.")
+        return False
+
+
+def download_pro_yaml(log: Optional[Callable[[str], None]] = None) -> bool:
+    """Download lora-MeshAdv-Pro-915M30S-downloaded.yaml from GitHub into available.d."""
+    dest = os.path.join(AVAILABLE_D, PRO_YAML_DOWNLOADED_FILENAME)
+
+    if not os.path.isdir(AVAILABLE_D):
+        _log(log, f"ERROR: {AVAILABLE_D} does not exist. Is meshtasticd installed?")
+        return False
+
+    _log(log, f"Downloading {PRO_YAML_DOWNLOADED_FILENAME} from GitHub...")
+    if download_file(PRO_YAML_URL, dest):
         _log(log, f"Download complete: {dest}")
         return True
     else:
