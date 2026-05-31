@@ -21,7 +21,7 @@ A graphical and terminal-based tool for installing and configuring [meshtasticd]
 **MeshAdv Pi Hats:**
 - MeshAdv Pi Hat v1.1
 - MeshAdv Mini
-- MeshAdv Pro *(coming soon)*
+- MeshAdv Pro
 
 ---
 
@@ -85,7 +85,7 @@ Status indicators appear next to each button showing the current state (e.g. Ena
 Displayed automatically at startup. Shows:
 
 - **Pi Model** — detected from `/proc/device-tree/model`
-- **Hat** — detected from the HAT EEPROM. If no EEPROM is found, defaults to *MeshAdv Pi Hat v1.1* (which has no EEPROM by design)
+- **Hat** — detected from the HAT EEPROM. If no EEPROM is found, defaults to *MeshAdv Pi Hat v1.1* (which has no EEPROM by design). In the GUI, a **Detect HAT** button is available to manually read the HAT EEPROM at any time, without needing to reboot with the HAT connected.
 - **meshtasticd** — installed version, or *Not installed*
 - **OS** — distro name, version codename, and bit-width (TUI only)
 
@@ -168,7 +168,7 @@ Opens a file browser showing all available config files from `/etc/meshtasticd/a
 
 - The recommended file for your detected HAT is highlighted with a **★** marker
 - Select a file to copy it into `/etc/meshtasticd/config.d/` (replacing any existing config)
-- A **Download Mini YAML** button is available to download `lora-MeshAdv-Mini-900M22S.yaml` directly from the Frequency Labs GitHub if the file is missing or needs to be refreshed
+- A **Download YAML** button is available to download either the Mini or Pro config YAML directly from the Frequency Labs GitHub if the file is missing or needs to be refreshed
 
 Default config files by HAT:
 
@@ -176,7 +176,9 @@ Default config files by HAT:
 |---|---|
 | MeshAdv Pi Hat v1.1 | `lora-MeshAdv-900M30S.yaml` |
 | MeshAdv Mini | `lora-MeshAdv-Mini-900M22S.yaml` |
-| MeshAdv Pro | `lora-MeshAdv-Mini-900M22S.yaml` *(temporary)* |
+| MeshAdv Pro | `lora-MeshAdv-Pro-915M30S.yaml` |
+
+When a MeshAdv Pro config is selected, `gpio=12=op,dh` is automatically added to `/boot/firmware/config.txt` to enable the required GPIO pin. This line is removed automatically if you switch to a non-Pro config. A **Reboot required** warning will appear after either change.
 
 > The status label shows the filename currently in use, or **Not set**.
 
@@ -284,7 +286,7 @@ These shortcuts are available when running in TUI mode (over SSH or with `--tui`
 
 ## Reboot Required Warning
 
-After making any changes to `/boot/firmware/config.txt` (SPI, I2C, GPS/UART), a **Reboot required** banner appears at the bottom of the window. These changes only take effect after a reboot.
+After making any changes to `/boot/firmware/config.txt` (SPI, I2C, GPS/UART, or selecting/deselecting a MeshAdv Pro HAT config), a **Reboot required** banner appears at the bottom of the window. These changes only take effect after a reboot.
 
 To reboot:
 ```bash
@@ -309,7 +311,7 @@ sudo reboot
 ## Troubleshooting
 
 **"No config files found in available.d"**
-meshtasticd is either not installed or the available.d directory is missing. Install meshtasticd first, then try again. You can also use the **Download Mini YAML** button in the Set Hat Config dialog to fetch the Mini config from GitHub.
+meshtasticd is either not installed or the available.d directory is missing. Install meshtasticd first, then try again. You can also use the **Download YAML** button in the Set Hat Config dialog to fetch the Mini config from GitHub.
 
 **"Command not found: meshtastic"**
 The meshtastic Python CLI is not installed. Use the **Install Python CLI** button. If you installed via pipx, you may need to close and reopen your terminal, or run `pipx ensurepath` and start a new session.
