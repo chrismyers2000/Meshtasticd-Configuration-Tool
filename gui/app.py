@@ -336,12 +336,12 @@ class MeshAdvApp(ctk.CTk):
                    "Installed" if installed else "Not installed",
                    COLOR_OK if installed else COLOR_WARN)
 
-        spi = config_editor.is_spi_enabled()
+        spi = config_editor.is_spi_enabled(sysinfo.pi)
         self.after(0, self._set_status, "spi",
                    "Enabled" if spi else "Disabled",
                    COLOR_OK if spi else COLOR_WARN)
 
-        i2c = config_editor.is_i2c_enabled()
+        i2c = config_editor.is_i2c_enabled(sysinfo.pi)
         self.after(0, self._set_status, "i2c",
                    "Enabled" if i2c else "Disabled",
                    COLOR_OK if i2c else COLOR_WARN)
@@ -452,20 +452,26 @@ class MeshAdvApp(ctk.CTk):
         installer.remove(log=self.log)
 
     def on_enable_spi(self) -> None:
-        if config_editor.is_spi_enabled():
+        if self.sysinfo is None:
+            return
+        pi = self.sysinfo.pi
+        if config_editor.is_spi_enabled(pi):
             self.log("SPI is already enabled.")
             return
         self._run_in_thread(
-            lambda: config_editor.enable_spi(log=self.log),
+            lambda: config_editor.enable_spi(log=self.log, pi=pi),
             done_callback=lambda: (self.refresh_all_status(), self._show_reboot_warning()),
         )
 
     def on_enable_i2c(self) -> None:
-        if config_editor.is_i2c_enabled():
+        if self.sysinfo is None:
+            return
+        pi = self.sysinfo.pi
+        if config_editor.is_i2c_enabled(pi):
             self.log("I2C is already enabled.")
             return
         self._run_in_thread(
-            lambda: config_editor.enable_i2c(log=self.log),
+            lambda: config_editor.enable_i2c(log=self.log, pi=pi),
             done_callback=lambda: (self.refresh_all_status(), self._show_reboot_warning()),
         )
 
@@ -513,8 +519,10 @@ class MeshAdvApp(ctk.CTk):
         HatConfigDialog(self, configs, self._on_hat_config_selected, hat=self.sysinfo.hat, log_callback=self.log)
 
     def _on_hat_config_selected(self, filename: str) -> None:
+        pi = self.sysinfo.pi if self.sysinfo else None
+
         def _do():
-            ok, reboot_needed = config_editor.set_hat_config(filename, log=self.log)
+            ok, reboot_needed = config_editor.set_hat_config(filename, log=self.log, pi=pi)
             self.after(0, self.refresh_all_status)
             if reboot_needed:
                 self.after(0, self.log, "GPIO change applied — reboot required.")

@@ -1,13 +1,26 @@
 #!/usr/bin/env bash
 # install.sh — Meshtasticd Configuration Tool installer
-# Usage: curl -fsSL <GITHUB_RAW_URL>/install.sh | bash
+#
+# Usage (stable, from the main branch):
+#   curl -fsSL <GITHUB_RAW_URL>/install.sh | bash
+#
+# Usage (beta branch, for testing changes before they reach main):
+#   curl -fsSL <GITHUB_RAW_URL>/install.sh | bash -s -- --beta
+#
+# When piping to bash, arguments must come after "bash -s --"; anything typed
+# after the URL would be handed to curl instead. Alternatively:
+#   curl -fsSL <GITHUB_RAW_URL>/install.sh | MESHADV_BRANCH=beta bash
+#
+# Options:
+#   --beta            install from the "beta" branch
+#   --branch <name>   install from any branch
 #
 
 
 set -e
 
-REPO_URL="https://github.com/chrismyers2000/Meshtasticd-Configuration-Tool"  
-RAW_URL="https://raw.githubusercontent.com/chrismyers2000/Meshtasticd-Configuration-Tool/main" 
+REPO_URL="https://github.com/chrismyers2000/Meshtasticd-Configuration-Tool"
+BRANCH="${MESHADV_BRANCH:-main}"
 INSTALL_DIR="$HOME/meshadv-config"
 APP_NAME="meshadv-config.py"
 
@@ -20,12 +33,44 @@ info()  { echo -e "${GREEN}[+]${NC} $1"; }
 warn()  { echo -e "${YELLOW}[!]${NC} $1"; }
 error() { echo -e "${RED}[x]${NC} $1"; exit 1; }
 
+# ---- Parse arguments ----
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --beta)
+            BRANCH="beta"
+            ;;
+        --branch)
+            [ -n "${2:-}" ] || error "--branch requires a branch name."
+            BRANCH="$2"
+            shift
+            ;;
+        --branch=*)
+            BRANCH="${1#--branch=}"
+            ;;
+        -h|--help)
+            sed -n '2,17p' "$0" 2>/dev/null || echo "Options: --beta, --branch <name>"
+            exit 0
+            ;;
+        *)
+            error "Unknown option: $1 (valid: --beta, --branch <name>)"
+            ;;
+    esac
+    shift
+done
+
+RAW_URL="https://raw.githubusercontent.com/chrismyers2000/Meshtasticd-Configuration-Tool/$BRANCH"
+
 echo ""
 echo "========================================"
 echo "  Meshtasticd Configuration Tool"
 echo "  by Frequency Labs"
 echo "========================================"
 echo ""
+if [ "$BRANCH" != "main" ]; then
+    warn "Installing from the '$BRANCH' branch (pre-release / testing build)."
+else
+    info "Installing from the main branch."
+fi
 
 # ---- Check Python 3 ----
 info "Checking Python 3..."
@@ -75,10 +120,11 @@ FILES=(
 for file in "${FILES[@]}"; do
     dest="$INSTALL_DIR/$file"
     mkdir -p "$(dirname "$dest")"
-    curl -fsSL "$RAW_URL/$file" -o "$dest" || error "Failed to download $file"
+    curl -fsSL "$RAW_URL/$file" -o "$dest" || error "Failed to download $file from branch '$BRANCH'"
 done
 
-info "All files downloaded."
+echo "$BRANCH" > "$INSTALL_DIR/.branch"
+info "All files downloaded (branch: $BRANCH)."
 
 # ---- Make executable ----
 chmod +x "$INSTALL_DIR/$APP_NAME"

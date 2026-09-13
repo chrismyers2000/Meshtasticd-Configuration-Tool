@@ -33,6 +33,16 @@ Run the following command on your Raspberry Pi to download and install the tool:
 curl -fsSL https://raw.githubusercontent.com/chrismyers2000/Meshtasticd-Configuration-Tool/refs/heads/main/install.sh | bash
 ```
 
+### Testing the beta branch
+
+Changes are staged on the `beta` branch before they reach `main`. To install the beta build, pass `--beta` to the installer (arguments go after `bash -s --` when piping from curl):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/chrismyers2000/Meshtasticd-Configuration-Tool/refs/heads/main/install.sh | bash -s -- --beta
+```
+
+Re-run the plain command above to switch back to the stable build. The installed branch is recorded in `~/meshadv-config/.branch`.
+
 
 ---
 

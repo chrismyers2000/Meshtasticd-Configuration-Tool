@@ -270,6 +270,8 @@ class HatConfigScreen(ModalScreen):
         threading.Thread(target=_work, daemon=True).start()
 
     def _refresh_list(self, configs: list) -> None:
+        # Keep the backing list in sync: on_list_view_selected indexes into it.
+        self._configs = configs
         list_view = self.query_one("#config-list", ListView)
         list_view.clear()
         for item in self._build_items(configs):
@@ -451,16 +453,22 @@ class MeshAdvTUI(App):
             self._run_worker(installer.install, channel, self.sysinfo.os, log=self.log_output)
 
     def action_enable_spi(self) -> None:
-        if config_editor.is_spi_enabled():
+        if self.sysinfo is None:
+            return
+        pi = self.sysinfo.pi
+        if config_editor.is_spi_enabled(pi):
             self.log_output("SPI is already enabled.")
             return
-        self._run_worker(config_editor.enable_spi, log=self.log_output, reboot=True)
+        self._run_worker(config_editor.enable_spi, log=self.log_output, reboot=True, pi=pi)
 
     def action_enable_i2c(self) -> None:
-        if config_editor.is_i2c_enabled():
+        if self.sysinfo is None:
+            return
+        pi = self.sysinfo.pi
+        if config_editor.is_i2c_enabled(pi):
             self.log_output("I2C is already enabled.")
             return
-        self._run_worker(config_editor.enable_i2c, log=self.log_output, reboot=True)
+        self._run_worker(config_editor.enable_i2c, log=self.log_output, reboot=True, pi=pi)
 
     def action_enable_gps_uart(self) -> None:
         if self.sysinfo is None:
@@ -490,9 +498,10 @@ class MeshAdvTUI(App):
         if result is None:
             return
         action, filename = result
+        pi = self.sysinfo.pi if self.sysinfo else None
         if action == "select" and filename:
             def _do():
-                ok, reboot_needed = config_editor.set_hat_config(filename, log=self.log_output)
+                ok, reboot_needed = config_editor.set_hat_config(filename, log=self.log_output, pi=pi)
                 if reboot_needed:
                     self.call_from_thread(self.log_output, "GPIO change applied — reboot required.")
                     self.call_from_thread(setattr, self, "reboot_required", True)
@@ -572,8 +581,10 @@ class MeshAdvTUI(App):
     # Status refresh
     # ------------------------------------------------------------------
 
-    @work(thread=True)
+    @work(thread=True, exclusive=True, group="refresh-status")
     def _refresh_status(self) -> None:
+        # exclusive: a refresh triggered while one is running cancels the older
+        # one instead of piling up several rounds of subprocess calls.
         sysinfo = self.sysinfo
         if sysinfo is None:
             return
@@ -583,12 +594,12 @@ class MeshAdvTUI(App):
                               "Installed" if installed else "Not installed",
                               "ok" if installed else "warn")
 
-        spi = config_editor.is_spi_enabled()
+        spi = config_editor.is_spi_enabled(sysinfo.pi)
         self.call_from_thread(self._set_status, "spi",
                               "Enabled" if spi else "Disabled",
                               "ok" if spi else "warn")
 
-        i2c = config_editor.is_i2c_enabled()
+        i2c = config_editor.is_i2c_enabled(sysinfo.pi)
         self.call_from_thread(self._set_status, "i2c",
                               "Enabled" if i2c else "Disabled",
                               "ok" if i2c else "warn")
@@ -660,6 +671,20 @@ class MeshAdvTUI(App):
     # ------------------------------------------------------------------
 
     def log_output(self, message: str) -> None:
+        """
+        Append a line to the output panel. Safe to call from worker threads:
+        Textual widgets may only be touched from the app thread, so calls from
+        elsewhere are marshalled through call_from_thread.
+        """
+        if threading.current_thread() is not threading.main_thread():
+            try:
+                self.call_from_thread(self._write_output, message)
+            except Exception:
+                pass
+            return
+        self._write_output(message)
+
+    def _write_output(self, message: str) -> None:
         try:
             log = self.query_one("#output-log", RichLog)
             log.write(message.rstrip())

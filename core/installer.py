@@ -7,10 +7,15 @@ from __future__ import annotations
 
 import glob
 import os
+import tempfile
 from typing import Callable, Optional
 
 from core.hardware import OsInfo
-from core.utils import run_command, run_sudo, CommandResult
+from core.utils import run_command, run_sudo, run_sudo_streaming
+
+# apt must never be interrupted by a timeout (a killed dpkg leaves the package
+# database half-updated), and debconf must never wait on a prompt nobody can see.
+_APT_ENV = {"DEBIAN_FRONTEND": "noninteractive"}
 
 CHANNELS = ["beta", "alpha", "daily"]
 
@@ -154,44 +159,42 @@ def _add_gpg_key(
 
     _log(log, f"  Fetching GPG key from {key_url}")
 
-    # curl | gpg --dearmor | sudo tee
-    # We chain this via shell=False by using subprocess pipes manually
-    import subprocess
-
+    # Download → dearmor → install, each step checked separately so the user
+    # sees the real cause (a 404 for an unsupported OS label, no network, ...)
+    # rather than gpg complaining about empty input.
+    tmp_dir = tempfile.mkdtemp(prefix="meshadv-key-")
+    armored = os.path.join(tmp_dir, "Release.key")
+    dearmored = os.path.join(tmp_dir, "Release.gpg")
     try:
-        curl_proc = subprocess.Popen(
-            ["curl", "-fsSL", key_url],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        gpg_proc = subprocess.Popen(
-            ["gpg", "--dearmor"],
-            stdin=curl_proc.stdout,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        curl_proc.stdout.close()
-        gpg_out, gpg_err = gpg_proc.communicate(timeout=30)
-
-        if gpg_proc.returncode != 0:
-            _log(log, f"  ERROR: gpg --dearmor failed.\n{gpg_err.decode()}")
+        result = run_command(["curl", "-fsSL", "-o", armored, key_url], timeout=60)
+        if not result.success:
+            _log(log, f"  ERROR: Could not download the repository key.\n{result.stderr.strip()}")
+            _log(log, f"  Check that {arch_label} is a supported OS for the {channel} channel.")
             return False
 
-        # Write via sudo tee
-        tee_proc = subprocess.Popen(
-            ["sudo", "tee", gpg_file],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
+        result = run_command(
+            ["gpg", "--batch", "--yes", "--dearmor", "-o", dearmored, armored],
+            timeout=30,
         )
-        _, tee_err = tee_proc.communicate(input=gpg_out, timeout=15)
-        if tee_proc.returncode != 0:
-            _log(log, f"  ERROR: Could not write GPG file.\n{tee_err.decode()}")
+        if not result.success:
+            _log(log, f"  ERROR: gpg --dearmor failed.\n{result.stderr.strip()}")
             return False
 
-    except Exception as exc:
-        _log(log, f"  ERROR during GPG key setup: {exc}")
-        return False
+        result = run_sudo(["cp", dearmored, gpg_file], timeout=15)
+        if not result.success:
+            _log(log, f"  ERROR: Could not write {gpg_file}.\n{result.stderr.strip()}")
+            return False
+        run_sudo(["chmod", "644", gpg_file], timeout=10)
+    finally:
+        for path in (armored, dearmored):
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+        try:
+            os.rmdir(tmp_dir)
+        except OSError:
+            pass
 
     _log(log, "  GPG key added.")
     return True
@@ -199,38 +202,30 @@ def _add_gpg_key(
 
 def _apt_update(log: Optional[Callable[[str], None]] = None) -> bool:
     _log(log, "Running apt-get update...")
-    result = run_sudo(["apt-get", "update"], timeout=180)
-    if result.stdout.strip():
-        _log(log, result.stdout)
+    result = run_sudo_streaming(["apt-get", "update"], log=log, env=_APT_ENV)
     if not result.success:
-        _log(log, f"ERROR: apt-get update failed.\n{result.stderr}")
+        _log(log, "ERROR: apt-get update failed.")
         return False
     return True
 
 
 def _apt_install(log: Optional[Callable[[str], None]] = None) -> bool:
-    _log(log, "Installing meshtasticd...")
-    result = run_sudo(
-        ["apt-get", "install", "-y", "meshtasticd"],
-        timeout=300,
+    _log(log, "Installing meshtasticd (this can take several minutes on a slow connection)...")
+    result = run_sudo_streaming(
+        ["apt-get", "install", "-y", "meshtasticd"], log=log, env=_APT_ENV,
     )
-    if result.stdout.strip():
-        _log(log, result.stdout)
     if not result.success:
-        _log(log, f"ERROR: apt-get install failed.\n{result.stderr}")
+        _log(log, "ERROR: apt-get install failed.")
         return False
     return True
 
 
 def _apt_purge(log: Optional[Callable[[str], None]] = None) -> bool:
-    result = run_sudo(
-        ["apt-get", "purge", "-y", "meshtasticd"],
-        timeout=120,
+    result = run_sudo_streaming(
+        ["apt-get", "purge", "-y", "meshtasticd"], log=log, env=_APT_ENV,
     )
-    if result.stdout.strip():
-        _log(log, result.stdout)
     if not result.success:
-        _log(log, f"ERROR: apt-get purge failed.\n{result.stderr}")
+        _log(log, "ERROR: apt-get purge failed.")
         return False
     return True
 
