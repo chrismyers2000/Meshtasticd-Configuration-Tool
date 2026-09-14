@@ -54,6 +54,8 @@ Navigate to the install directory and run:
 python3 ~/meshadv-config/meshadv-config.py
 ```
 
+> Run it as your normal user, **not** with `sudo`. The tool asks for sudo itself only for the commands that need it. Under sudo, root's Python cannot see your installed packages and the tool will refuse to start.
+
 ### Display mode auto-detection
 
 The tool automatically selects the right interface based on your environment:

@@ -47,7 +47,28 @@ def run_tui() -> None:
     app.run()
 
 
+def check_not_root() -> None:
+    """
+    Refuse to run as root. The tool runs as the normal user and calls sudo
+    itself for each privileged command. Under sudo, root's Python cannot see
+    the user's pip/pipx packages (customtkinter, textual, the meshtastic CLI),
+    which shows up as misleading "not installed" errors.
+    """
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        invoked_as = os.environ.get("SUDO_USER")
+        print("ERROR: Do not run this tool with sudo or as root.")
+        print("It runs as your normal user and asks for sudo only where needed.")
+        if invoked_as:
+            print(f"Run it again as '{invoked_as}' without sudo:")
+        else:
+            print("Run it again as your normal user:")
+        print(f"  python3 {os.path.abspath(sys.argv[0])}")
+        sys.exit(1)
+
+
 def main() -> None:
+    check_not_root()
+
     # Allow forcing a mode via command-line flag
     if "--tui" in sys.argv:
         run_tui()
